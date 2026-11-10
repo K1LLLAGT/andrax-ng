@@ -1,0 +1,47 @@
+#!/system/bin/sh
+# ANDRAX-NG: start the rootfs with proot (no root needed).
+# Usage: start-andrax <env-file>   (the app writes the env file before every launch)
+ENVFILE="$1"
+if [ -z "$ENVFILE" ] || [ ! -f "$ENVFILE" ]; then
+  echo "start-andrax: env file missing: $ENVFILE" >&2
+  exit 1
+fi
+. "$ENVFILE"
+
+if [ ! -d "$ANDRAX_ROOTFS" ]; then
+  echo "start-andrax: rootfs not found: $ANDRAX_ROOTFS" >&2
+  exit 1
+fi
+
+# proot needs these; LD_LIBRARY_PATH is set only for proot itself, never for the rootfs.
+export PROOT_TMP_DIR="$ANDRAX_TMP"
+export PROOT_LOADER="$ANDRAX_LOADER"
+export PROOT_LOADER_32="$ANDRAX_LOADER32"
+export LD_LIBRARY_PATH="$ANDRAX_LD_PATH"
+mkdir -p "$ANDRAX_TMP"
+
+# Use the configured shell if it exists in the rootfs (a symlink counts), else /bin/sh.
+SH="$ANDRAX_SHELL"
+if [ ! -e "$ANDRAX_ROOTFS$SH" ] && [ ! -L "$ANDRAX_ROOTFS$SH" ]; then
+  echo "start-andrax: $SH not found in the rootfs, using /bin/sh" >&2
+  SH=/bin/sh
+fi
+
+GUEST_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
+[ -n "$ANDRAX_EXTRA_PATH" ] && GUEST_PATH="$GUEST_PATH:$ANDRAX_EXTRA_PATH"
+
+set -- "$ANDRAX_PROOT" --link2symlink -0 --kill-on-exit -r "$ANDRAX_ROOTFS" -b /dev -b /proc -b /sys
+for f in loadavg uptime stat version; do
+  [ -f "$ANDRAX_FAKEPROC/$f" ] && set -- "$@" -b "$ANDRAX_FAKEPROC/$f:/proc/$f"
+done
+if [ -n "$ANDRAX_SHARED" ] && [ -d "$ANDRAX_SHARED" ]; then
+  set -- "$@" -b "$ANDRAX_SHARED:/sdcard"
+fi
+set -- "$@" -w /root /usr/bin/env -i \
+  HOME=/root USER=root LOGNAME=root SHELL="$SH" \
+  TERM="${TERM:-xterm-256color}" COLORTERM=truecolor LANG=C.UTF-8 \
+  PATH="$GUEST_PATH" ANDRAX_PROFILE="$ANDRAX_PROFILE" ANDRAX_MODE=proot \
+  "$SH" --login
+
+echo "ANDRAX-NG ($ANDRAX_PROFILE, proot). Type 'exit' to leave."
+exec "$@"

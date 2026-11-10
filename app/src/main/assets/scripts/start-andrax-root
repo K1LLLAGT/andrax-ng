@@ -1,0 +1,85 @@
+#!/system/bin/sh
+# ANDRAX-NG: start the rootfs in a real chroot. Must run as root (the app runs it through su).
+# Usage: start-andrax-root <env-file>
+# Mounts proc, sys, dev, devpts and the shared folder, chroots, and unmounts everything on exit,
+# including when the terminal is closed (HUP) or the process is terminated.
+ENVFILE="$1"
+if [ -z "$ENVFILE" ] || [ ! -f "$ENVFILE" ]; then
+  echo "start-andrax-root: env file missing: $ENVFILE" >&2
+  exit 1
+fi
+. "$ENVFILE"
+
+if [ "$(id -u)" != "0" ]; then
+  echo "start-andrax-root: must run as root" >&2
+  exit 1
+fi
+R="$ANDRAX_ROOTFS"
+if [ -z "$R" ] || [ ! -d "$R" ]; then
+  echo "start-andrax-root: rootfs not found: $R" >&2
+  exit 1
+fi
+MOUNTS="${ANDRAX_PROC_MOUNTS:-/proc/mounts}"
+
+# Unmount everything below $R, deepest first. Safe to run when nothing is mounted.
+umount_all() {
+  mps=$(while read -r _dev mp _rest; do
+    case "$mp" in "$R"/*) echo "$mp" ;; esac
+  done < "$MOUNTS" | sort -r)
+  for mp in $mps; do
+    umount -l "$mp" 2>/dev/null || umount "$mp" 2>/dev/null
+  done
+}
+
+CLEANED=0
+cleanup() {
+  [ "$CLEANED" = "1" ] && return
+  CLEANED=1
+  umount_all
+}
+trap 'cleanup' EXIT
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+# Leftovers from a previous run that was killed hard.
+umount_all
+
+mkdir -p "$R/dev" "$R/proc" "$R/sys" "$R/sdcard" "$R/tmp"
+mount -o bind /dev "$R/dev" || { echo "mount /dev failed" >&2; exit 1; }
+mkdir -p "$R/dev/pts"
+# Prefer the host's devpts so "tty" inside shows the terminal's own device; else a fresh instance.
+mount -o bind /dev/pts "$R/dev/pts" 2>/dev/null \
+  || mount -t devpts devpts "$R/dev/pts" -o gid=5,mode=620,ptmxmode=666 2>/dev/null
+mount -t proc proc "$R/proc" || echo "warning: could not mount /proc" >&2
+mount -t sysfs sysfs "$R/sys" 2>/dev/null || mount -o bind /sys "$R/sys" 2>/dev/null
+
+# As root the raw storage path is more reliable than /storage/emulated/0.
+if [ -n "$ANDRAX_SHARED" ] && [ -d "$ANDRAX_SHARED" ]; then
+  SRC="$ANDRAX_SHARED"
+  case "$ANDRAX_SHARED" in
+    /storage/emulated/0*)
+      ALT="/data/media/0${ANDRAX_SHARED#/storage/emulated/0}"
+      [ -d "$ALT" ] && SRC="$ALT"
+      ;;
+  esac
+  mount -o bind "$SRC" "$R/sdcard" || echo "warning: could not bind the shared folder" >&2
+fi
+
+SH="$ANDRAX_SHELL"
+if [ ! -e "$R$SH" ] && [ ! -L "$R$SH" ]; then
+  echo "start-andrax-root: $SH not found in the rootfs, using /bin/sh" >&2
+  SH=/bin/sh
+fi
+GUEST_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
+[ -n "$ANDRAX_EXTRA_PATH" ] && GUEST_PATH="$GUEST_PATH:$ANDRAX_EXTRA_PATH"
+
+echo "ANDRAX-NG ($ANDRAX_PROFILE, chroot as root). Type 'exit' to leave; mounts are removed automatically."
+chroot "$R" /usr/bin/env -i \
+  HOME=/root USER=root LOGNAME=root SHELL="$SH" \
+  TERM="${TERM:-xterm-256color}" COLORTERM=truecolor LANG=C.UTF-8 \
+  PATH="$GUEST_PATH" ANDRAX_PROFILE="$ANDRAX_PROFILE" ANDRAX_MODE=chroot \
+  "$SH" --login
+RC=$?
+cleanup
+exit $RC

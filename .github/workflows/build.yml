@@ -1,0 +1,74 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # proot + helper libraries come from the official Termux package repo, SHA-256 verified.
+      - name: Fetch proot and helper libraries
+        run: bash scripts/fetch-native.sh
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      # Optional: add these repository secrets to sign the release APK with your own key.
+      # Without them the release APK is signed with the debug key (fine for sideloading).
+      - name: Prepare release signing
+        env:
+          KS_B64: ${{ secrets.ANDRAX_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDRAX_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDRAX_KEY_ALIAS }}
+          KS_KEYPASS: ${{ secrets.ANDRAX_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/andrax.keystore"
+            {
+              echo "ANDRAX_KEYSTORE=$RUNNER_TEMP/andrax.keystore"
+              echo "ANDRAX_KEYSTORE_PASSWORD=$KS_PASS"
+              echo "ANDRAX_KEY_ALIAS=$KS_ALIAS"
+              echo "ANDRAX_KEY_PASSWORD=$KS_KEYPASS"
+            } >> "$GITHUB_ENV"
+            echo "Release will be signed with your keystore."
+          else
+            echo "No keystore secrets set: release APK will use the debug key."
+          fi
+
+      - name: Build debug and release APKs (arm64-v8a)
+        run: gradle :app:assembleDebug :app:assembleRelease --stacktrace
+
+      - name: Check APK contents
+        run: |
+          for a in app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/release/app-release.apk; do
+            echo "== $a"
+            unzip -l "$a" | grep -E 'lib/arm64-v8a/|assets/scripts/'
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: andrax-ng-apks
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
