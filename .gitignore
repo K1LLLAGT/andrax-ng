@@ -1,0 +1,9 @@
+.gradle/
+build/
+local.properties
+*.keystore
+*.jks
+.idea/
+*.iml
+captures/
+app/src/main/jniLibs/arm64-v8a/*.so
