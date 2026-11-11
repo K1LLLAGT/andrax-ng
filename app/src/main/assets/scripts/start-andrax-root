@@ -89,12 +89,19 @@ fi
 GUEST_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
 [ -n "$ANDRAX_EXTRA_PATH" ] && GUEST_PATH="$GUEST_PATH:$ANDRAX_EXTRA_PATH"
 
+# Give the guest shell a controlling terminal (fixes "no job control in this shell").
+# -w keeps this script waiting so cleanup only runs after the shell exits.
+SETSID=""
+if [ -x "$R/usr/bin/setsid" ] && chroot "$R" /usr/bin/setsid --help 2>&1 | grep -q -- '--wait'; then
+  SETSID="/usr/bin/setsid -w -c"
+fi
+
 echo "ANDRAX-NG ($ANDRAX_PROFILE, chroot as root). Type 'exit' to leave; mounts are removed automatically."
 chroot "$R" /usr/bin/env -i \
   HOME=/root USER=root LOGNAME=root SHELL="$SH" \
   TERM="${TERM:-xterm-256color}" COLORTERM=truecolor LANG=C.UTF-8 \
   PATH="$GUEST_PATH" ANDRAX_PROFILE="$ANDRAX_PROFILE" ANDRAX_MODE=chroot \
-  "$SH" -l
+  $SETSID "$SH" -l
 RC=$?
 cleanup
 exit $RC
