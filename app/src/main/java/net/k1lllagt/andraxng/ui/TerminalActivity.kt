@@ -169,8 +169,14 @@ class TerminalActivity : Activity() {
 
     private fun showKeyboard() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        terminalView.isFocusableInTouchMode = true
         terminalView.requestFocus()
-        imm.showSoftInput(terminalView, 0)
+        terminalView.post {
+            if (!imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)) {
+                @Suppress("DEPRECATION")
+                imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+            }
+        }
     }
 
     private fun takeCtrl(): Boolean {
