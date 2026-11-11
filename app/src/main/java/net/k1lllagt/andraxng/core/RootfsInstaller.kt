@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 class RootfsInstaller(
@@ -19,7 +20,28 @@ class RootfsInstaller(
         class Import(val uri: Uri, val sha256: String?) : Source()
     }
 
+    private companion object {
+        /** Profile ids with an install in flight (process-wide, so two installer instances cannot race). */
+        val ACTIVE: MutableSet<String> = ConcurrentHashMap.newKeySet<String>()
+    }
+
     fun install(
+        profile: Profile,
+        source: Source,
+        cancel: AtomicBoolean,
+        report: (phase: String, done: Long, total: Long, detail: String) -> Unit
+    ) {
+        if (!ACTIVE.add(profile.id)) {
+            throw IOException("An install of ${profile.title} is already running.")
+        }
+        try {
+            doInstall(profile, source, cancel, report)
+        } finally {
+            ACTIVE.remove(profile.id)
+        }
+    }
+
+    private fun doInstall(
         profile: Profile,
         source: Source,
         cancel: AtomicBoolean,
@@ -27,6 +49,7 @@ class RootfsInstaller(
     ) {
         paths.ensureDirs()
         NativeLibs.prepare(paths, log)
+        recoverInterruptedSwap(profile, cancel)
 
         val free = paths.files.usableSpace
         if (free < profile.requiredFreeBytes) {
@@ -73,6 +96,7 @@ class RootfsInstaller(
 
             is Source.Import -> {
                 val meta = queryMeta(source.uri)
+                log.i("importing '${meta.first}' (${meta.second} bytes) from ${source.uri}")
                 var expected = source.sha256?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: profile.fixedSha256
                 if (expected == null && profile.sumsUrl != null && meta.first == profile.fileName) {
                     try {
@@ -93,16 +117,45 @@ class RootfsInstaller(
             }
         }
 
+        val installedSha = result.sha256
+
+        // ---- Swap: the live rootfs is only set aside, never deleted, until the new one is complete ----
         report("Finalizing", 0, 0, "")
         val finalDir = paths.rootfs(profile)
-        if (SafeFs.exists(finalDir.path)) SafeFs.deleteRootfs(finalDir, log, cancel)
-        if (!partial.renameTo(finalDir)) throw IOException("Could not move the extracted rootfs into place")
+        val oldDir = oldDirOf(finalDir)
+        var haveOld = false
+        try {
+            if (SafeFs.exists(finalDir.path)) {
+                if (SafeFs.exists(oldDir.path)) SafeFs.deleteTree(oldDir, null)
+                if (!finalDir.renameTo(oldDir)) {
+                    throw IOException(
+                        "Could not set the current ${profile.id} install aside " +
+                            "(is a session still running?). Nothing was changed."
+                    )
+                }
+                haveOld = true
+            }
+            if (!partial.renameTo(finalDir)) throw IOException("Could not move the extracted rootfs into place")
 
-        report("Applying post-install fixes", 0, 0, "")
-        PostInstall.apply(ctx, profile, finalDir, settings, log)
-        File(finalDir, Paths.MARKER).writeText(
-            "profile=${profile.id}\ninstalled=${System.currentTimeMillis()}\nsha256=${result.sha256}\n"
-        )
+            report("Applying post-install fixes", 0, 0, "")
+            PostInstall.apply(ctx, profile, finalDir, settings, log)
+            File(finalDir, Paths.MARKER).writeText(
+                "profile=${profile.id}\ninstalled=${System.currentTimeMillis()}\nsha256=$installedSha\n"
+            )
+        } catch (e: Throwable) {
+            rollbackSwap(finalDir, oldDir, haveOld)
+            throw e
+        }
+
+        if (haveOld) {
+            report("Removing the previous install", 0, 0, "")
+            try {
+                SafeFs.deleteTree(oldDir, null)
+            } catch (e: Exception) {
+                // Harmless: recoverInterruptedSwap() finishes this on the next install.
+                log.w("could not remove the previous install yet: ${e.message}")
+            }
+        }
 
         if (!settings.keepArchive) archiveToDelete?.delete()
         if (settings.activeProfile.isEmpty() || Profiles.byId(settings.activeProfile) == null) {
@@ -113,11 +166,51 @@ class RootfsInstaller(
 
     /** Removes an installed rootfs (and leftovers). Refuses if mounts are still active inside it. */
     fun remove(profile: Profile, cancel: AtomicBoolean? = null) {
-        SafeFs.deleteRootfs(paths.rootfs(profile), log, cancel)
+        val finalDir = paths.rootfs(profile)
+        SafeFs.deleteRootfs(finalDir, log, cancel)
+        SafeFs.deleteTree(oldDirOf(finalDir), cancel)
         SafeFs.deleteTree(paths.partial(profile), cancel)
         File(paths.downloadsDir, profile.fileName).delete()
         if (settings.activeProfile == profile.id) settings.activeProfile = ""
         log.i("removed ${profile.id}")
+    }
+
+    private fun oldDirOf(finalDir: File) = File(finalDir.parentFile, finalDir.name + ".old")
+
+    /** Puts the previous install back after a failed swap or failed post-install. */
+    private fun rollbackSwap(finalDir: File, oldDir: File, haveOld: Boolean) {
+        if (!haveOld) return
+        try {
+            if (SafeFs.exists(finalDir.path)) SafeFs.deleteTree(finalDir, null)
+            if (oldDir.renameTo(finalDir)) {
+                log.w("install failed; the previous ${finalDir.name} was restored")
+            } else {
+                log.w("install failed AND the previous ${finalDir.name} could not be restored; it is at ${oldDir.path}")
+            }
+        } catch (e: Exception) {
+            log.w("rollback failed: ${e.message}; the previous install is at ${oldDir.path}")
+        }
+    }
+
+    /**
+     * Finishes or undoes a swap that was cut short (app killed, device rebooted).
+     * Marker present on the new tree: the swap completed, only the cleanup was missed.
+     * Marker absent: the new tree is incomplete, so the previous one goes back.
+     */
+    private fun recoverInterruptedSwap(profile: Profile, cancel: AtomicBoolean) {
+        val finalDir = paths.rootfs(profile)
+        val oldDir = oldDirOf(finalDir)
+        if (!SafeFs.exists(oldDir.path)) return
+        if (File(finalDir, Paths.MARKER).exists()) {
+            log.i("removing leftover ${oldDir.name} from an earlier install")
+            SafeFs.deleteTree(oldDir, cancel)
+        } else {
+            log.w("found an interrupted swap for ${profile.id}; restoring the previous install")
+            if (SafeFs.exists(finalDir.path)) SafeFs.deleteTree(finalDir, cancel)
+            if (!oldDir.renameTo(finalDir)) {
+                throw IOException("Could not restore the previous ${profile.id} install from ${oldDir.path}")
+            }
+        }
     }
 
     private fun fetchAndHash(

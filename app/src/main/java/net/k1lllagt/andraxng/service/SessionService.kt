@@ -18,9 +18,11 @@ import net.k1lllagt.andraxng.R
 import net.k1lllagt.andraxng.core.Fmt
 import net.k1lllagt.andraxng.core.InstallCancelled
 import net.k1lllagt.andraxng.core.InstallState
+import net.k1lllagt.andraxng.core.Paths
 import net.k1lllagt.andraxng.core.Profiles
 import net.k1lllagt.andraxng.core.RootfsInstaller
 import net.k1lllagt.andraxng.core.SessionHub
+import java.io.File
 
 /**
  * Foreground service that (a) keeps the process alive while terminal sessions run and
@@ -86,6 +88,15 @@ class SessionService : Service() {
         if (profile == null) {
             InstallState.begin("")
             InstallState.fail("Unknown profile")
+            maybeStop()
+            return
+        }
+        // Replacing an installed rootfs under a running session breaks that session.
+        // Sessions are not tracked per profile, so any open session blocks a reinstall.
+        val alreadyInstalled = File(App.paths.rootfs(profile), Paths.MARKER).exists()
+        if (alreadyInstalled && SessionHub.activeSessions > 0) {
+            InstallState.begin(profile.id)
+            InstallState.fail("Close all terminal sessions before reinstalling ${profile.title}.")
             maybeStop()
             return
         }
