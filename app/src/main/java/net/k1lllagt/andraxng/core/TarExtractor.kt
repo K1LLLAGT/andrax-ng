@@ -20,6 +20,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 class InstallCancelled : IOException("Cancelled")
 
+/** The archive stream itself broke (bad xz/gzip data, truncated read). Fatal: never skipped per-file. */
+class ArchiveReadException(message: String, cause: Throwable?) : IOException(message, cause)
+
 class ExtractStats {
     var files = 0L
     var dirs = 0L
@@ -94,11 +97,25 @@ object TarExtractor {
         val buf = ByteArray(256 * 1024)
         var lastReport = 0L
         var loggedErrors = 0
+        var entryIndex = 0L
+        var lastName = "(none)"
         dest.mkdirs()
 
         while (true) {
             if (cancel.get()) throw InstallCancelled()
-            val entry = tar.nextEntry ?: break
+            val next: TarArchiveEntry? = try {
+                tar.nextEntry
+            } catch (e: IOException) {
+                if (e is InstallCancelled) throw e
+                throw ArchiveReadException(
+                    "Archive unreadable after entry #$entryIndex (last: $lastName), " +
+                        "compressed offset ~${counting.count}: ${e.message}",
+                    e
+                )
+            }
+            val entry = next ?: break
+            entryIndex++
+            lastName = entry.name
             val now = System.currentTimeMillis()
             if (now - lastReport > 250) {
                 lastReport = now
@@ -165,7 +182,17 @@ object TarExtractor {
                         FileOutputStream(path).use { out ->
                             while (true) {
                                 if (cancel.get()) throw InstallCancelled()
-                                val n = tar.read(buf)
+                                // A failure while READING the archive is fatal; only write-side
+                                // errors (disk, permissions) are counted per-file.
+                                val n = try {
+                                    tar.read(buf)
+                                } catch (e: IOException) {
+                                    throw ArchiveReadException(
+                                        "Archive stream broke inside '$rel' (entry #$entryIndex), " +
+                                            "compressed offset ~${counting.count}: ${e.message}",
+                                        e
+                                    )
+                                }
                                 if (n < 0) break
                                 out.write(buf, 0, n)
                             }
@@ -179,7 +206,9 @@ object TarExtractor {
                 stats.errors++
                 if (loggedErrors++ < 50) log.w("extract error on $rel: ${e.message}")
             } catch (e: IOException) {
-                if (e is InstallCancelled || (e.message ?: "").contains("No space left")) throw e
+                if (e is InstallCancelled || e is ArchiveReadException ||
+                    (e.message ?: "").contains("No space left")
+                ) throw e
                 stats.errors++
                 if (loggedErrors++ < 50) log.w("extract error on $rel: ${e.message}")
             }
@@ -208,9 +237,14 @@ object TarExtractor {
                     onProgress: (Long, Long, String) -> Unit): ExtractResult =
         FileInputStream(file).use { extract(it, file.length(), dest, profile, cancel, log, onProgress) }
 
+    /**
+     * Picks the decoder from the magic bytes. Anything that is not xz, gzip or a real tar
+     * (ustar magic at offset 257) is rejected with the first bytes shown, instead of being
+     * parsed as tar and failing later with a misleading "Corrupted TAR archive".
+     */
     private fun openDecoder(b: BufferedInputStream): InputStream {
-        b.mark(16)
-        val head = ByteArray(6)
+        b.mark(2048)
+        val head = ByteArray(512)
         var n = 0
         while (n < head.size) {
             val r = b.read(head, n, head.size - n)
@@ -221,10 +255,19 @@ object TarExtractor {
         val isXz = n >= 6 && head[0] == 0xFD.toByte() && head[1] == 0x37.toByte() &&
             head[2] == 0x7A.toByte() && head[3] == 0x58.toByte() && head[4] == 0x5A.toByte() && head[5] == 0.toByte()
         val isGz = n >= 2 && head[0] == 0x1F.toByte() && head[1] == 0x8B.toByte()
+        val isTar = n >= 262 && String(head, 257, 5, Charsets.US_ASCII) == "ustar"
         return when {
             isXz -> XZCompressorInputStream(b)
             isGz -> GzipCompressorInputStream(b)
-            else -> b // plain tar
+            isTar -> b
+            else -> {
+                val k = minOf(n, 8)
+                val hex = (0 until k).joinToString(" ") { "%02x".format(head[it]) }
+                throw IOException(
+                    "Unrecognized archive format (first $k bytes: $hex, read $n). " +
+                        "Expected xz, gzip or tar. Wrong or truncated file?"
+                )
+            }
         }
     }
 
