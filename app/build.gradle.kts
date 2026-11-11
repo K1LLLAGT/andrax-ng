@@ -14,8 +14,8 @@ android {
         // dirs for targetSdk >= 29. See README "Architecture decisions".
         // Sideload-only; Google Play will not accept this.
         targetSdk = 28
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
 
         ndk { abiFilters += "arm64-v8a" }
     }

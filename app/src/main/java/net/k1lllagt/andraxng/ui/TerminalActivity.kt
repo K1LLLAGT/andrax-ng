@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.HorizontalScrollView
@@ -46,6 +47,9 @@ class TerminalActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
         val p = Profiles.byId(intent.getStringExtra(EXTRA_PROFILE) ?: App.settings.activeProfile)
         if (p == null || !App.paths.isInstalled(p)) {
             Toast.makeText(this, "No rootfs installed. Run setup first.", Toast.LENGTH_LONG).show()
@@ -93,6 +97,7 @@ class TerminalActivity : Activity() {
         session = s
         terminalView.attachSession(s)
         terminalView.requestFocus()
+        terminalView.postDelayed({ showKeyboard() }, 300)
         status.text = spec.title
         SessionHub.activeSessions = 1
         SessionHub.onStopRequested = { runOnUiThread { session?.finishIfRunning() } }
@@ -119,6 +124,7 @@ class TerminalActivity : Activity() {
             row.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             return b
         }
+        key("KBD") { showKeyboard() }
         key("ESC") { send("\u001b") }
         key("TAB") { send("\t") }
         ctrlBtn = key("CTRL") {
@@ -141,7 +147,6 @@ class TerminalActivity : Activity() {
         key("/") { send("/") }
         key("|") { send("|") }
         key("~") { send("~") }
-        key("KBD") { showKeyboard() }
         val hs = HorizontalScrollView(this)
         hs.isHorizontalScrollBarEnabled = false
         hs.addView(row)
@@ -165,7 +170,7 @@ class TerminalActivity : Activity() {
     private fun showKeyboard() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         terminalView.requestFocus()
-        imm.showSoftInput(terminalView, InputMethodManager.SHOW_IMPLICIT)
+        imm.showSoftInput(terminalView, 0)
     }
 
     private fun takeCtrl(): Boolean {
