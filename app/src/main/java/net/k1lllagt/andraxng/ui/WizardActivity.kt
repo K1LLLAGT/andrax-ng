@@ -128,7 +128,7 @@ class WizardActivity : Activity() {
                 if (isFinishing) return@runOnUiThread
                 rootView.text = "Root: " + when (DeviceInfo.rootStatus) {
                     RootStatus.GRANTED -> "granted (chroot mode available)"
-                    RootStatus.DENIED -> "su found but access was denied"
+                    RootStatus.DENIED -> "su found but access was denied. " + DeviceInfo.ROOT_HELP
                     RootStatus.NO_SU -> "none (proot mode)"
                     RootStatus.UNKNOWN -> "unknown"
                 }

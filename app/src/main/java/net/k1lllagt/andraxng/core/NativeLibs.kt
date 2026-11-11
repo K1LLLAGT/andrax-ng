@@ -55,9 +55,15 @@ object NativeLibs {
                 p.destroyForcibly()
                 "FAIL: proot --version timed out"
             } else {
-                val out = p.inputStream.bufferedReader().readText().trim().take(400)
-                if (p.exitValue() == 0) "OK: " + out.lineSequence().firstOrNull().orEmpty()
-                else "FAIL (exit ${p.exitValue()}): $out"
+                val out = p.inputStream.bufferedReader().readText().trim().take(2000)
+                if (p.exitValue() == 0) {
+                    // proot prints an ASCII-art logo first, so look for the version number.
+                    val ver = Regex("\\d+\\.\\d+\\.\\d+[\\w.\\-]*").find(out)?.value
+                    val last = out.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty().take(80)
+                    "OK: proot runs (" + (ver ?: last.ifEmpty { "no version text" }) + ")"
+                } else {
+                    "FAIL (exit ${p.exitValue()}): " + out.take(400)
+                }
             }
         } catch (e: IOException) {
             "FAIL: ${e.message}"

@@ -209,7 +209,14 @@ class TerminalActivity : Activity() {
         override fun shouldUseCtrlSpaceWorkaround() = false
         override fun isTerminalViewSelected() = true
         override fun copyModeChanged(copyMode: Boolean) {}
-        override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean = false
+        override fun onKeyDown(keyCode: Int, e: KeyEvent, session: TerminalSession): Boolean {
+            // After the shell has exited, Enter closes the screen (the terminal says "press Enter").
+            if (!session.isRunning && keyCode == KeyEvent.KEYCODE_ENTER) {
+                finish()
+                return true
+            }
+            return false
+        }
         override fun onKeyUp(keyCode: Int, e: KeyEvent): Boolean = false
         override fun onLongPress(event: MotionEvent): Boolean = false
         override fun readControlKey(): Boolean = takeCtrl()
@@ -266,8 +273,15 @@ class TerminalActivity : Activity() {
         SessionHub.activeSessions = 0
         SessionHub.onStopRequested = null
         SessionService.release(this)
-        Toast.makeText(this, "Session ended (exit $exit)", Toast.LENGTH_SHORT).show()
-        if (!isFinishing) finish()
+        if (isFinishing || isDestroyed) return
+        if (exit == 0) {
+            Toast.makeText(this, "Session ended", Toast.LENGTH_SHORT).show()
+            finish()
+        } else {
+            // Keep the screen so the error text stays readable.
+            status.text = "Session ended with exit code $exit. Press Enter or Back to close."
+            status.setTextColor(Color.rgb(255, 180, 120))
+        }
     }
 
     /** Safety net for chroot mode: the launch script unmounts on exit, this catches a killed script. */
@@ -279,8 +293,10 @@ class TerminalActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        // Back keeps the session alive. Type "exit" or use the notification's Stop action to end it.
-        moveTaskToBack(true)
+        // While the shell runs, Back keeps it alive in the background (type "exit" or use the
+        // notification's Stop action to end it). Once it has ended, Back closes the screen.
+        val s = session
+        if (s == null || !s.isRunning) finish() else moveTaskToBack(true)
     }
 
     override fun onDestroy() {

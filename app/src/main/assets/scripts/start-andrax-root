@@ -66,10 +66,25 @@ if [ -n "$ANDRAX_SHARED" ] && [ -d "$ANDRAX_SHARED" ]; then
   mount -o bind "$SRC" "$R/sdcard" || echo "warning: could not bind the shared folder" >&2
 fi
 
-SH="$ANDRAX_SHELL"
-if [ ! -e "$R$SH" ] && [ ! -L "$R$SH" ]; then
-  echo "start-andrax-root: $SH not found in the rootfs, using /bin/sh" >&2
-  SH=/bin/sh
+# Pick a shell that exists INSIDE the rootfs (a symlink counts). Android paths such as
+# /system/bin/bash are never valid here, so they are skipped.
+pick_shell() {
+  for cand in "$ANDRAX_SHELL" /bin/bash /usr/bin/bash /bin/sh; do
+    case "$cand" in
+      ""|/system/*|/vendor/*|/apex/*|/data/*|/storage/*|/sdcard*|/mnt/*) continue ;;
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ -e "$R$cand" ] || [ -L "$R$cand" ]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+SH=$(pick_shell) || { echo "start-andrax-root: no usable shell found in the rootfs" >&2; exit 1; }
+if [ "$SH" != "$ANDRAX_SHELL" ]; then
+  echo "start-andrax-root: configured shell '$ANDRAX_SHELL' is not usable inside the rootfs, using $SH" >&2
 fi
 GUEST_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
 [ -n "$ANDRAX_EXTRA_PATH" ] && GUEST_PATH="$GUEST_PATH:$ANDRAX_EXTRA_PATH"
@@ -79,7 +94,7 @@ chroot "$R" /usr/bin/env -i \
   HOME=/root USER=root LOGNAME=root SHELL="$SH" \
   TERM="${TERM:-xterm-256color}" COLORTERM=truecolor LANG=C.UTF-8 \
   PATH="$GUEST_PATH" ANDRAX_PROFILE="$ANDRAX_PROFILE" ANDRAX_MODE=chroot \
-  "$SH" --login
+  "$SH" -l
 RC=$?
 cleanup
 exit $RC

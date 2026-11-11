@@ -20,11 +20,25 @@ export PROOT_LOADER_32="$ANDRAX_LOADER32"
 export LD_LIBRARY_PATH="$ANDRAX_LD_PATH"
 mkdir -p "$ANDRAX_TMP"
 
-# Use the configured shell if it exists in the rootfs (a symlink counts), else /bin/sh.
-SH="$ANDRAX_SHELL"
-if [ ! -e "$ANDRAX_ROOTFS$SH" ] && [ ! -L "$ANDRAX_ROOTFS$SH" ]; then
-  echo "start-andrax: $SH not found in the rootfs, using /bin/sh" >&2
-  SH=/bin/sh
+# Pick a shell that exists INSIDE the rootfs (a symlink counts). Android paths such as
+# /system/bin/bash are never valid here, so they are skipped.
+pick_shell() {
+  for cand in "$ANDRAX_SHELL" /bin/bash /usr/bin/bash /bin/sh; do
+    case "$cand" in
+      ""|/system/*|/vendor/*|/apex/*|/data/*|/storage/*|/sdcard*|/mnt/*) continue ;;
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ -e "$ANDRAX_ROOTFS$cand" ] || [ -L "$ANDRAX_ROOTFS$cand" ]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+SH=$(pick_shell) || { echo "start-andrax: no usable shell found in the rootfs" >&2; exit 1; }
+if [ "$SH" != "$ANDRAX_SHELL" ]; then
+  echo "start-andrax: configured shell '$ANDRAX_SHELL' is not usable inside the rootfs, using $SH" >&2
 fi
 
 GUEST_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games"
@@ -41,7 +55,7 @@ set -- "$@" -w /root /usr/bin/env -i \
   HOME=/root USER=root LOGNAME=root SHELL="$SH" \
   TERM="${TERM:-xterm-256color}" COLORTERM=truecolor LANG=C.UTF-8 \
   PATH="$GUEST_PATH" ANDRAX_PROFILE="$ANDRAX_PROFILE" ANDRAX_MODE=proot \
-  "$SH" --login
+  "$SH" -l
 
 echo "ANDRAX-NG ($ANDRAX_PROFILE, proot). Type 'exit' to leave."
 exec "$@"

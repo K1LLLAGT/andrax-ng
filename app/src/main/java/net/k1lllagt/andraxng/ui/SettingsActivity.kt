@@ -22,6 +22,7 @@ import net.k1lllagt.andraxng.core.NativeLibs
 import net.k1lllagt.andraxng.core.Profile
 import net.k1lllagt.andraxng.core.Profiles
 import net.k1lllagt.andraxng.core.RootfsInstaller
+import net.k1lllagt.andraxng.core.Settings
 import net.k1lllagt.andraxng.core.SafeFs
 
 class SettingsActivity : Activity() {
@@ -36,6 +37,7 @@ class SettingsActivity : Activity() {
     private lateinit var wake: Switch
     private lateinit var info: TextView
     private val modeIds = HashMap<Int, String>()
+    private var shellFixed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,7 +87,7 @@ class SettingsActivity : Activity() {
         shared = field("Shared folder (appears as /sdcard inside; empty = none)", s.sharedFolder, "/storage/emulated/0/ANDRAX-NG-share")
         dns1 = field("DNS server 1", s.dns1, "1.1.1.1")
         dns2 = field("DNS server 2", s.dns2, "8.8.8.8")
-        shell = field("Shell inside the rootfs", s.shell, "/bin/bash")
+        shell = field("Shell inside the Linux system (a path there, e.g. /bin/bash)", s.shell, "/bin/bash")
         hostname = field("Hostname", s.hostname, "andrax")
 
         keep = Switch(this)
@@ -99,7 +101,10 @@ class SettingsActivity : Activity() {
 
         col.addView(Ui.button(this, "Save") {
             save()
-            Toast.makeText(this, "Saved. New values apply to the next session.", Toast.LENGTH_SHORT).show()
+            val msg = if (shellFixed) "Saved. That shell was an Android path, so it was reset to /bin/bash."
+            else "Saved. New values apply to the next session."
+            shellFixed = false
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
         })
 
         col.addView(Ui.heading(this, "Tools"))
@@ -109,7 +114,11 @@ class SettingsActivity : Activity() {
             info.text = "Checking root..."
             Thread {
                 val r = DeviceInfo.probeRoot()
-                runOnUiThread { info.text = "root: $r  su=${DeviceInfo.suPath}" }
+                runOnUiThread {
+                    info.text = "root: $r  su=${DeviceInfo.suPath}\n" +
+                        (if (r == net.k1lllagt.andraxng.core.RootStatus.GRANTED) "Root works." else
+                            DeviceInfo.rootNote + "\n" + DeviceInfo.ROOT_HELP)
+                }
             }.start()
         })
         col.addView(Ui.button(this, "Test proot helper") {
@@ -138,7 +147,13 @@ class SettingsActivity : Activity() {
         s.sharedFolder = shared.text.toString().trim()
         s.dns1 = dns1.text.toString().trim().ifEmpty { "1.1.1.1" }
         s.dns2 = dns2.text.toString().trim().ifEmpty { "8.8.8.8" }
-        s.shell = shell.text.toString().trim().ifEmpty { "/bin/bash" }
+        var sh = shell.text.toString().trim().ifEmpty { "/bin/bash" }
+        if (Settings.isAndroidPath(sh)) {
+            sh = "/bin/bash"
+            shell.setText(sh)
+            shellFixed = true
+        }
+        s.shell = sh
         s.hostname = hostname.text.toString().trim().ifEmpty { "andrax" }
         s.keepArchive = keep.isChecked
         s.wakeLock = wake.isChecked

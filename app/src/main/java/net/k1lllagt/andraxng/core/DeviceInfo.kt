@@ -10,6 +10,9 @@ enum class Mode { PROOT, CHROOT }
 enum class RootStatus { UNKNOWN, NO_SU, DENIED, GRANTED }
 
 object DeviceInfo {
+    const val ROOT_HELP =
+        "Open Magisk > Superuser, allow ANDRAX-NG, then tap Settings > Re-detect root."
+
     val model: String get() = Build.MODEL ?: "unknown"
     val isT870: Boolean get() = model.startsWith("SM-T870")
     val isS24Ultra: Boolean get() = model.startsWith("SM-S928")
@@ -22,6 +25,11 @@ object DeviceInfo {
 
     @Volatile
     var suPath: String? = null
+        private set
+
+    /** Human-readable reason for the last probe result (empty when root works). */
+    @Volatile
+    var rootNote: String = ""
         private set
 
     private val suCandidates = listOf(
@@ -45,18 +53,27 @@ object DeviceInfo {
         val su = findSu()
         if (su == null) {
             rootStatus = RootStatus.NO_SU
+            rootNote = "No su binary found."
             return rootStatus
         }
         rootStatus = try {
             val p = ProcessBuilder(su, "-c", "id").redirectErrorStream(true).start()
             if (!p.waitFor(25, TimeUnit.SECONDS)) {
                 p.destroyForcibly()
+                rootNote = "No answer from the superuser prompt within 25 seconds."
                 RootStatus.DENIED
             } else {
-                val out = p.inputStream.bufferedReader().readText()
-                if (out.contains("uid=0")) RootStatus.GRANTED else RootStatus.DENIED
+                val out = p.inputStream.bufferedReader().readText().trim()
+                if (out.contains("uid=0")) {
+                    rootNote = ""
+                    RootStatus.GRANTED
+                } else {
+                    rootNote = "su answered: " + out.take(120).ifEmpty { "(nothing)" }
+                    RootStatus.DENIED
+                }
             }
         } catch (e: IOException) {
+            rootNote = "Could not run su: ${e.message}"
             RootStatus.NO_SU
         }
         return rootStatus

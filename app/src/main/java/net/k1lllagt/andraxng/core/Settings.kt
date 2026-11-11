@@ -3,6 +3,14 @@ package net.k1lllagt.andraxng.core
 import android.content.Context
 
 class Settings(ctx: Context) {
+    companion object {
+        private val ANDROID_PREFIXES = listOf("/system", "/vendor", "/apex", "/data", "/storage", "/sdcard", "/mnt")
+
+        /** True for host (Android) paths, which can never be a shell inside the rootfs. */
+        fun isAndroidPath(p: String): Boolean =
+            ANDROID_PREFIXES.any { p == it || p.startsWith("$it/") }
+    }
+
     private val sp = ctx.getSharedPreferences("andrax-ng", Context.MODE_PRIVATE)
 
     /** "auto", "proot" or "chroot" */

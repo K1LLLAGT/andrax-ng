@@ -53,6 +53,10 @@ class MainActivity : Activity() {
         col.addView(Ui.title(this, "ANDRAX-NG"))
         col.addView(Ui.body(this, "${DeviceInfo.model}  |  mode: ${modeLabel()}  |  root: ${DeviceInfo.rootStatus.name.lowercase()}"))
 
+        if (DeviceInfo.rootStatus == RootStatus.DENIED) {
+            col.addView(Ui.body(this, "Root was denied, so proot mode is used. " + DeviceInfo.ROOT_HELP))
+        }
+
         val installed = Profiles.all.filter { App.paths.isInstalled(it) }
         col.addView(Ui.heading(this, "Open a terminal"))
         if (installed.isEmpty()) {
